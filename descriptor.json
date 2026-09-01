@@ -2,7 +2,7 @@
   "id": "a065ae89-2a15-4eec-9bdf-700025244166",
   "name": "laim-agg",
   "description": "Агрегатор результатов тестов по блоку — выставляет итоговый светофор",
-  "fullDescription": "FOR MORE DETAILS VIEW README.md\n\nО ноде: Агрегатор валидирует all_results четырёх тестов (km-dynamic, local/global-drift, oos-oot), собирает их в единый monitoring-result/v1 и выставляет ИТОГОВЫЙ цвет. Неполный реестр не может дать зелёный итог. Один выход all_results передаёт report-assembler итог, точность судьи и test_results. Детектор аномалий в светофоре НЕ участвует — его test_anomalies идёт напрямую в report-assembler.detector_anomalies.",
+  "fullDescription": "FOR MORE DETAILS VIEW README.md\n\nО ноде: Агрегатор валидирует all_results четырёх тестов (km-dynamic, local/global-drift, oos-oot), точность автоассесора и assessment_result, собирает их в единый monitoring-result/v2 и выставляет итоговый цвет. Неполный реестр, невычислимый assessment_result или невычислимая ключевая метрика не могут дать зелёный итог.",
   "shortNameToDisplay": "Светофор",
   "moduleType": "test",
   "shape": "test",
@@ -14,6 +14,26 @@
   },
   "ports": [
     {
+      "name": "assessor_accuracy",
+      "label": "Точность автоассесора",
+      "in": true,
+      "type": "default",
+      "shape": "shape_model",
+      "required": true,
+      "description": "acc_auto из laim-asessor-agent, число от 0 до 1",
+      "order": 1
+    },
+    {
+      "name": "assessment_result",
+      "label": "Статус оценивания",
+      "in": true,
+      "type": "default",
+      "shape": "shape_model",
+      "required": true,
+      "description": "laim-assessment-result.v1 из laim-asessor-agent",
+      "order": 2
+    },
+    {
       "name": "in",
       "label": "входные данные",
       "in": true,
@@ -22,16 +42,16 @@
       "required": false,
       "dynamic": true,
       "description": "Результаты тестов с семафором (km, drift, oos-oot)",
-      "order": 1
+      "order": 3
     },
     {
       "name": "all_results",
       "label": "all_results",
       "in": false,
       "type": "default",
-      "shape": "shape_parameter",
-      "description": "monitoring-result/v2-simple: итоговый цвет, счётчики цветов и реестр test_results",
-      "order": 2
+      "shape": "shape_model",
+      "description": "monitoring-result/v2: итоговый цвет, assessment_result и реестр test_results",
+      "order": 4
     }
   ],
   "portsMetadata": {
@@ -47,14 +67,37 @@
         "requirements.txt"
       ],
       "sourceFiles": [
-        "main.py"
+        "main.py",
+        "aggregator.py"
       ],
       "functionName": "main",
       "functionParameters": []
     }
   },
   "ui": {
-    "settings": [],
+    "settings": [
+      {
+        "page": "General",
+        "title": "General",
+        "components": [
+          {
+            "type": "form",
+            "label": "Порог автоассесора",
+            "config": {
+              "components": [
+                {
+                  "parameter": "red_assessor_accuracy",
+                  "label": "Минимальная точность автоассесора",
+                  "uiComponent": "input",
+                  "type": "float",
+                  "defaultValue": 0.6
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
     "result": {
       "title": "Results",
       "components": [

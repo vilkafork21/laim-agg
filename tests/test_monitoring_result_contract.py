@@ -1,15 +1,14 @@
-"""Контракт единого monitoring-result/v1 между laim-agg и сборщиком."""
+"""Контракт monitoring-result/v2 на выходе laim-agg."""
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 
 MODULE_DIR = Path(__file__).resolve().parents[1]
-REPORT_DIR = MODULE_DIR.parent / "laim-report-assembler"
 
 
 def _load_main():
@@ -26,23 +25,7 @@ def _load_main():
 agg = _load_main()
 
 
-def _load_report_main():
-    sys.path.insert(0, str(REPORT_DIR))
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "report_assembler_handoff", REPORT_DIR / "main.py"
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        sys.path.pop(0)
-
-
-report_node = _load_report_main()
-
-
-def _common(test_name, color="green", status="ok"):
+def _common(test_name, color="green", status="computed"):
     return {
         "test_name": test_name,
         "color": color,
@@ -104,14 +87,33 @@ def _results():
     }
 
 
+def _assessment_result(status="computed"):
+    result = {
+        "contract_version": "laim-assessment-result.v1",
+        "status": status,
+        "assessment_mode": "dialogue",
+        "total_units": 1,
+        "scored_units": 1 if status == "computed" else 0,
+    }
+    if status == "not_computable":
+        result["reason"] = "judge unavailable"
+    return result
+
+
+def _aggregate(tests, **kwargs):
+    return agg.main(
+        assessor_accuracy=kwargs.pop("assessor_accuracy", 0.9),
+        assessment_result=kwargs.pop("assessment_result", _assessment_result()),
+        **{f"in{index}": value for index, value in enumerate(tests.values())},
+        **kwargs,
+    )
+
+
 def test_full_registry_is_preserved_in_one_output():
     tests = _results()
-    result = agg.main(
-        assessor_accuracy=0.9,
-        **{f"in{index}": value for index, value in enumerate(tests.values())},
-    )["all_results"]
+    result = _aggregate(tests)["all_results"]
 
-    assert result["schema_version"] == "monitoring-result/v1"
+    assert result["schema_version"] == "monitoring-result/v2"
     assert result["expected_tests"] == list(agg.EXPECTED_TESTS)
     assert result["missing_tests"] == []
     assert result["test_results"] == tests
@@ -119,99 +121,69 @@ def test_full_registry_is_preserved_in_one_output():
     assert result["assessor_accuracy"] == 0.9
 
 
-def test_report_assembler_accepts_aggregator_output_without_adapters(tmp_path):
+def test_missing_test_cannot_produce_green():
     tests = _results()
-    result = agg.main(
-        assessor_accuracy=0.9,
-        **{f"in{index}": value for index, value in enumerate(tests.values())},
-    )
-
-    report = report_node.main(
-        scored_data=pd.DataFrame({
-            "query_id": ["trace-1"],
-            "question": ["вопрос"],
-            "answer": ["ответ"],
-            "agent_target": [0.9],
-        }),
-        metric_selector_res={"main_metric": "target"},
-        aggregator_result=result,
-        detector_anomalies=[],
-        output_dir=str(tmp_path),
-    )["report_json"]
-
-    assert report["timeline"][0]["zone"] == "green"
-    assert report["km_dynamics"]["baseline"] == 0.8
-    assert report["km_dynamics"]["series"][0]["km"] == 0.75
-    assert report["km_dynamics"]["series"][0]["assessor_accuracy"] == 0.9
-    assert len(report["anomalies"]) == 4
-
-
-def test_missing_test_cannot_produce_green(tmp_path):
-    tests = _results()
-    tests.pop("global_drift")
-    result = agg.main(
-        assessor_accuracy=0.9,
-        **{f"in{index}": value for index, value in enumerate(tests.values())},
-    )["all_results"]
+    missing = tests.pop("global_drift")
+    result = _aggregate(tests)["all_results"]
 
     assert result["color"] == "gray"
     assert result["coverage_gate_applied"] is True
     assert result["missing_tests"] == ["global_drift"]
 
-    report = report_node.main(
-        scored_data=pd.DataFrame({
-            "query_id": ["trace-1"], "question": ["вопрос"],
-            "answer": ["ответ"], "agent_target": [0.9],
-        }),
-        metric_selector_res={"main_metric": "target"},
-        aggregator_result=result,
-        detector_anomalies=[],
-        output_dir=str(tmp_path),
-    )["report_json"]
-    assert report["timeline"][0]["zone"] == "gray"
-    assert "global_drift" in report["general_comment"]
+    # тот же набор с вернувшимся global_drift снова даёт полный реестр
+    restored = _aggregate({**tests, "global_drift": missing})["all_results"]
+    assert restored["missing_tests"] == []
+    assert restored["color"] == "green"
 
 
 def test_duplicate_test_is_rejected():
     km = _results()["km_test"]
     with pytest.raises(ValueError, match="повторно"):
-        agg.main(assessor_accuracy=0.9, in0=km, in1=dict(km))
-
-
-def test_report_refuses_bundle_without_km_test():
-    tests = _results()
-    tests.pop("km_test")
-    result = agg.main(
-        assessor_accuracy=0.9,
-        **{f"in{index}": value for index, value in enumerate(tests.values())},
-    )
-    with pytest.raises(ValueError, match="не содержит km_test"):
-        report_node._as_monitoring_result(result)
+        agg.main(
+            assessor_accuracy=0.9,
+            assessment_result=_assessment_result(),
+            in0=km,
+            in1=dict(km),
+        )
 
 
 def test_incomplete_all_results_is_rejected():
     km = _results()["km_test"]
     km.pop("km_baseline")
     with pytest.raises(ValueError, match="km_baseline"):
-        agg.main(assessor_accuracy=0.9, in0=km)
+        _aggregate({"km_test": km})
 
 
 def test_conflicting_colors_are_rejected():
     km = _results()["km_test"]
     km["calculated_traffic_lights"]["test_light"] = "red"
     with pytest.raises(ValueError, match="несогласованные цвета"):
-        agg.main(assessor_accuracy=0.9, in0=km)
+        _aggregate({"km_test": km})
 
 
 def test_unknown_status_is_rejected():
     km = _results()["km_test"]
     km["status"] = "success"
-    with pytest.raises(ValueError, match="status='success'"):
-        agg.main(assessor_accuracy=0.9, in0=km)
+    with pytest.raises(ValueError, match="status='success'.*не поддерживается"):
+        _aggregate({"km_test": km})
 
 
 def test_not_computable_must_be_gray():
     km = _results()["km_test"]
     km["status"] = "not_computable"
     with pytest.raises(ValueError, match="status/color"):
-        agg.main(assessor_accuracy=0.9, in0=km)
+        _aggregate({"km_test": km})
+
+
+def test_unavailable_assessor_cannot_produce_green():
+    result = _aggregate(
+        _results(), assessment_result=_assessment_result("not_computable")
+    )["all_results"]
+
+    assert result["color"] == "gray"
+    assert result["assessment_gate_applied"] is True
+
+
+def test_descriptor_deploys_transitive_import():
+    descriptor = json.loads((MODULE_DIR / "descriptor.json").read_text())
+    assert "aggregator.py" in descriptor["script"]["runConfiguration"]["sourceFiles"]
