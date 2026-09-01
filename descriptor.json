@@ -1,0 +1,93 @@
+{
+  "id": "a065ae89-2a15-4eec-9bdf-700025244166",
+  "name": "laim-agg",
+  "description": "Агрегатор результатов тестов по блоку — выставляет итоговый светофор",
+  "fullDescription": "FOR MORE DETAILS VIEW README.md\n\nО ноде: Агрегатор валидирует all_results четырёх тестов (km-dynamic, local/global-drift, oos-oot), собирает их в единый monitoring-result/v1 и выставляет ИТОГОВЫЙ цвет. Неполный реестр не может дать зелёный итог. Один выход all_results передаёт report-assembler итог, точность судьи и test_results. Детектор аномалий в светофоре НЕ участвует — его test_anomalies идёт напрямую в report-assembler.detector_anomalies.",
+  "shortNameToDisplay": "Светофор",
+  "moduleType": "test",
+  "shape": "test",
+  "uiResults": {
+    "semaphore": {
+      "port": "all_results",
+      "dataKey": "color"
+    }
+  },
+  "ports": [
+    {
+      "name": "in",
+      "label": "входные данные",
+      "in": true,
+      "type": "default",
+      "shape": "shape_model",
+      "required": false,
+      "dynamic": true,
+      "description": "Результаты тестов с семафором (km, drift, oos-oot)",
+      "order": 1
+    },
+    {
+      "name": "all_results",
+      "label": "all_results",
+      "in": false,
+      "type": "default",
+      "shape": "shape_parameter",
+      "description": "monitoring-result/v2-simple: итоговый цвет, счётчики цветов и реестр test_results",
+      "order": 2
+    }
+  ],
+  "portsMetadata": {
+    "hasDynamicInputPort": true,
+    "hasDynamicOutputPort": false
+  },
+  "script": {
+    "type": "python",
+    "deployType": "docker",
+    "baseImageKey": "py312-simple",
+    "runConfiguration": {
+      "libraryDependencies": [
+        "requirements.txt"
+      ],
+      "sourceFiles": [
+        "main.py"
+      ],
+      "functionName": "main",
+      "functionParameters": []
+    }
+  },
+  "ui": {
+    "settings": [],
+    "result": {
+      "title": "Results",
+      "components": [
+        {
+          "type": "semaphore",
+          "label": "Итоговый светофор мониторинга",
+          "order": 1,
+          "config": {
+            "datasets": [
+              {
+                "value": "$.all_results.calculated_traffic_lights.test_light",
+                "title": "$.all_results.calculated_traffic_lights.semaphore_title"
+              }
+            ]
+          },
+          "showOnWorkflow": true
+        },
+        {
+          "type": "html",
+          "uiComponent": "html",
+          "name": "$.all_results.report_html",
+          "parameter": "$.all_results.report_html",
+          "label": "Сводка агрегации",
+          "order": 2,
+          "config": {
+            "datasets": [
+              {
+                "data": "$.all_results.report_html"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
