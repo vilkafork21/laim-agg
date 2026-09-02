@@ -41,10 +41,10 @@ def aggregate(
 ) -> str:
     """Итоговый цвет светофора по списку результатов тестов."""
     counts = count_colors(inputs)
-    logger.info("[g-aiva-agg|aggregator] Счётчики цветов: %s", counts)
+    logger.info("[laim-agg] Счётчики цветов: %s", counts)
     if counts["unknown"]:
         logger.warning(
-            "[g-aiva-agg|aggregator] %d входов с нераспознанным цветом — "
+            "[laim-agg] %d входов с нераспознанным цветом — "
             "не участвуют в агрегации", counts["unknown"],
         )
 
@@ -53,6 +53,6 @@ def aggregate(
     if counts["amber"] >= critical_amber:
         return "amber"
     if counts["red"] + counts["amber"] + counts["green"] == 0:
-        logger.info("[g-aiva-agg|aggregator] Ни одного цветного светофора на входе")
+        logger.info("[laim-agg] Ни одного цветного светофора на входе")
         return "gray"
     return "green"

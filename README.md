@@ -100,14 +100,14 @@ laim-asessor-agent.assessment_result ──► assessment_result   ─┘    п�
 автоассессора `0.789`, оценивание 94/94 (формат строк — из кода; значения условные):
 
 ```text
-INFO aggregator: [g-aiva-agg|aggregator] Счётчики цветов: {'red': 0, 'amber': 0, 'green': 4, 'gray': 0, 'unknown': 0}
+INFO aggregator: [laim-agg] Счётчики цветов: {'red': 0, 'amber': 0, 'green': 4, 'gray': 0, 'unknown': 0}
 INFO main: laim-agg: tests=4 missing=[] color=green gates=[]
 ```
 
 Прогон с понижением до серого (формат строк — из кода; значения условные):
 
 ```text
-INFO aggregator: [g-aiva-agg|aggregator] Счётчики цветов: {'red': 0, 'amber': 0, 'green': 3, 'gray': 0, 'unknown': 0}
+INFO aggregator: [laim-agg] Счётчики цветов: {'red': 0, 'amber': 0, 'green': 3, 'gray': 0, 'unknown': 0}
 INFO main: laim-agg: tests=3 missing=['global_drift'] color=gray gates=['Неполный реестр обязательных тестов', 'Точность автоассессора 0.550 не выше порога 0.600']
 ```
 
