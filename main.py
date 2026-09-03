@@ -5,21 +5,15 @@ from math import isfinite
 from numbers import Real
 from typing import Any
 
-from aggregator import aggregate, count_colors, normalize_color
+from table15 import JUDGE, KM_TEST, decide, judge_outcome, normalize_color, outcome_from_result
 
 logger = logging.getLogger(__name__)
 
-RESULT_SCHEMA_VERSION = "monitoring-result/v2"
+RESULT_SCHEMA_VERSION = "monitoring-result/v3"
 ASSESSMENT_RESULT_VERSION = "laim-assessment-result.v1"
-EXPECTED_TESTS = ("km_test", "local_drift", "global_drift", "oos_oot")
+KNOWN_TESTS = ("km_test", "local_drift", "global_drift", "oos_oot")
 _ALLOWED_STATUSES = {"computed", "low_confidence", "not_computable"}
 
-_COLOR_DATIVE = {
-    "red": "красному",
-    "amber": "жёлтому",
-    "green": "зелёному",
-    "gray": "серому",
-}
 _COLOR_RU = {
     "red": "Красный",
     "amber": "Жёлтый",
@@ -33,11 +27,13 @@ _COLOR_HEX = {
     "gray": "#9e9e9e",
 }
 _TEST_LABEL = {
-    "km_test": "Динамика ключевой метрики",
-    "local_drift": "Локальный дрифт запросов",
-    "global_drift": "Глобальный дрифт запросов",
-    "oos_oot": "Разделение выборок (OOS/OOT)",
+    JUDGE: "Автоассессор: допуск и контроль (6.3.3)",
+    "km_test": "Динамика ключевой метрики (6.3.4)",
+    "local_drift": "Покрытие потока эталоном (6.3.7)",
+    "global_drift": "Прогноз влияния сдвига (6.3.8)",
+    "oos_oot": "Различимость выборок (6.3.6)",
 }
+_STATUS_RU = {"computed": "выполнен", "not_assessed": "не оценено", None: "отсутствует"}
 
 
 def _validate_accuracy(value: Any) -> float:
@@ -83,7 +79,37 @@ def _validate_assessment_result(value: Any) -> dict[str, Any]:
     return result
 
 
-def _index_test_results(values: list[Any]) -> dict[str, dict[str, Any]]:
+def _parse_tests(value: Any, setting: str) -> tuple[str, ...]:
+    if not isinstance(value, str):
+        raise ValueError(f"{setting} должен быть строкой имён тестов через запятую")
+    names = tuple(item.strip() for item in value.split(",") if item.strip())
+    unknown = [name for name in names if name not in KNOWN_TESTS]
+    if unknown:
+        raise ValueError(f"{setting}: неизвестные тесты {unknown}")
+    if len(set(names)) != len(names):
+        raise ValueError(f"{setting}: имена тестов повторяются: {value!r}")
+    return names
+
+
+def _settings(
+    expected_tests: Any, informative_tests: Any
+) -> tuple[tuple[str, ...], frozenset[str]]:
+    expected = _parse_tests(expected_tests, "expected_tests")
+    informative = frozenset(_parse_tests(informative_tests, "informative_tests"))
+    if KM_TEST not in expected:
+        raise ValueError(f"expected_tests должен содержать {KM_TEST}: тест 6.3.4 обязателен")
+    if KM_TEST in informative:
+        raise ValueError(f"informative_tests не может содержать {KM_TEST}")
+    if not informative <= set(expected):
+        raise ValueError(
+            f"informative_tests {sorted(informative - set(expected))} нет в expected_tests"
+        )
+    return expected, informative
+
+
+def _index_test_results(
+    values: list[Any], expected: tuple[str, ...]
+) -> dict[str, dict[str, Any]]:
     indexed: dict[str, dict[str, Any]] = {}
     required = {"test_name", "status", "color", "calculated_traffic_lights"}
     for position, value in enumerate(values):
@@ -95,8 +121,12 @@ def _index_test_results(values: list[Any]) -> dict[str, dict[str, Any]]:
                 f"laim-agg.in{position} не содержит поля {sorted(missing)}"
             )
         name = value["test_name"]
-        if name not in EXPECTED_TESTS:
+        if name not in KNOWN_TESTS:
             raise ValueError(f"laim-agg.in{position}: неизвестный test_name={name!r}")
+        if name not in expected:
+            raise ValueError(
+                f"laim-agg.in{position}: результат {name!r} не ожидается в этом запуске"
+            )
         if name in indexed:
             raise ValueError(f"laim-agg: результат {name!r} подключён повторно")
 
@@ -125,13 +155,13 @@ def _index_test_results(values: list[Any]) -> dict[str, dict[str, Any]]:
         record["calculated_traffic_lights"] = dict(lights, test_light=color)
         indexed[name] = record
 
-    km = indexed.get("km_test")
+    km = indexed.get(KM_TEST)
     if km is not None:
         required_km = {"km_name", "km_baseline", "km_monitoring", "km_delta"}
         missing = required_km - set(km)
         if missing:
             raise ValueError(f"laim-agg: km_test не содержит поля {sorted(missing)}")
-    return {name: indexed[name] for name in EXPECTED_TESTS if name in indexed}
+    return {name: indexed[name] for name in expected if name in indexed}
 
 
 def _dot(color: str, size: int = 12) -> str:
@@ -144,36 +174,33 @@ def _dot(color: str, size: int = 12) -> str:
 
 def _report_html(
     color: str,
-    inputs: list[dict[str, Any]],
-    gate_reasons: list[str],
-    missing_tests: list[str],
+    quality_status: str,
+    registry: dict[str, dict[str, Any]],
+    reasons: list[str],
 ) -> str:
-    counts = count_colors(inputs)
     rows = "".join(
         "<tr>"
-        f"<td style='padding:6px 12px'>{_TEST_LABEL[item['test_name']]}</td>"
-        f"<td style='padding:6px 12px'>{_dot(item['color'])}&nbsp;"
-        f"{_COLOR_RU[item['color']]}</td></tr>"
-        for item in inputs
+        f"<td style='padding:6px 12px'>{_TEST_LABEL[name]}</td>"
+        f"<td style='padding:6px 12px'>{_STATUS_RU[item['status']]}"
+        f"{' (информативный)' if item['informative'] else ''}</td>"
+        f"<td style='padding:6px 12px'>{_dot(item['light'] or 'gray')}&nbsp;"
+        f"{_COLOR_RU.get(item['light'], '—')}</td>"
+        f"<td style='padding:6px 12px'>{item['reason'] or ''}</td></tr>"
+        for name, item in registry.items()
     )
-    gates = "".join(
-        f"<p style='color:#b71c1c;margin:6px 0'>{reason}</p>"
-        for reason in gate_reasons
+    quality = (
+        "Оценка качества выполнена"
+        if quality_status == "assessed"
+        else "Оценка качества не выполнена"
     )
-    missing = (
-        "<p>Не подключены: "
-        + ", ".join(_TEST_LABEL[name] for name in missing_tests)
-        + ".</p>"
-        if missing_tests
-        else ""
-    )
+    basis = "".join(f"<li>{reason}</li>" for reason in reasons)
     return (
         "<html><body style='font-family:sans-serif;font-size:14px'>"
-        "<h3>Итоговый светофор мониторинга</h3>"
-        f"<p>{_dot(color, 16)}&nbsp;<b>{_COLOR_RU[color]}</b></p>"
-        f"<p>red={counts['red']}, amber={counts['amber']}, "
-        f"green={counts['green']}, gray={counts['gray']}</p>"
-        f"{gates}{missing}<table>{rows}</table></body></html>"
+        "<h3>Итог итерации автомониторинга</h3>"
+        f"<p>{_dot(color, 16)}&nbsp;<b>{_COLOR_RU[color]}</b> · {quality}</p>"
+        + (f"<p>Основания:</p><ul>{basis}</ul>" if basis else "")
+        + "<table><tr><th>Тест</th><th>Статус</th><th>Светофор</th>"
+        f"<th>Основание</th></tr>{rows}</table></body></html>"
     )
 
 
@@ -181,9 +208,12 @@ def main(
     assessor_accuracy: float | None,
     assessment_result: dict,
     red_assessor_accuracy: float = 0.6,
+    expected_tests: str = "km_test,local_drift,global_drift,oos_oot",
+    informative_tests: str = "local_drift,global_drift,oos_oot",
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Валидирует результаты тестов и формирует monitoring-result/v2."""
+    """Валидирует результаты тестов и формирует monitoring-result/v3 по таблице 15."""
+    expected, informative = _settings(expected_tests, informative_tests)
     assessment = _validate_assessment_result(assessment_result)
     accuracy = (
         None
@@ -194,66 +224,60 @@ def main(
     raw_inputs = [
         value for key, value in sorted(kwargs.items()) if key.startswith("in")
     ]
-    test_results = _index_test_results(raw_inputs)
-    inputs = list(test_results.values())
-    missing_tests = [name for name in EXPECTED_TESTS if name not in test_results]
+    test_results = _index_test_results(raw_inputs, expected)
 
-    color = aggregate(inputs, critical_red=1, critical_amber=1)
-    gate_reasons: list[str] = []
-    coverage_gate = bool(missing_tests and color == "green")
-    accuracy_gate = bool(
-        accuracy is not None and accuracy <= threshold and color == "green"
-    )
-    assessment_gate = bool(
-        assessment["status"] != "computed" and color == "green"
-    )
-    km = test_results.get("km_test")
-    key_metric_gate = bool(
-        (km is None or km["status"] != "computed") and color == "green"
-    )
-    if coverage_gate:
-        gate_reasons.append("Неполный реестр обязательных тестов")
-    if accuracy_gate:
-        gate_reasons.append(
-            f"Точность автоассессора {accuracy:.3f} не выше порога {threshold:.3f}"
-        )
-    if assessment_gate:
-        gate_reasons.append("Оценивание monitoring-выборки не выполнено")
-    if key_metric_gate:
-        gate_reasons.append("Ключевая метрика monitoring-выборки не вычислена")
-    if gate_reasons and color == "green":
-        color = "gray"
-
+    judge = judge_outcome(assessment, accuracy, threshold)
+    outcomes = {
+        name: outcome_from_result(name, test_results.get(name), name in informative)
+        for name in expected
+    }
+    decision = decide(judge, outcomes)
+    registry = {
+        item.name: {
+            "expected": True,
+            "received": item.received,
+            "informative": item.informative,
+            "status": item.status,
+            "light": item.light,
+            "reason": item.reason,
+        }
+        for item in (judge, *outcomes.values())
+    }
+    missing_tests = [name for name in expected if name not in test_results]
+    reasons = list(decision.reasons)
     logger.info(
-        "laim-agg: tests=%d missing=%s color=%s gates=%s",
-        len(inputs),
-        missing_tests,
-        color,
-        gate_reasons,
+        "[laim-agg] итог=%s оценка=%s получено=%d/%d основания=%s",
+        decision.color,
+        decision.quality_status,
+        len(test_results),
+        len(expected),
+        reasons,
     )
-    title = f"Результат мониторинга соответствует {_COLOR_DATIVE[color]} светофору"
+    quality = "выполнена" if decision.quality_status == "assessed" else "не выполнена"
+    title = (
+        f"Итог итерации: {_COLOR_RU[decision.color].lower()}; "
+        f"оценка качества {quality}"
+    )
     return {
         "all_results": {
             "schema_version": RESULT_SCHEMA_VERSION,
             "calculated_traffic_lights": {
-                "test_light": color,
+                "test_light": decision.color,
                 "semaphore_title": title,
             },
             "block_name": "Результаты мониторинга",
-            "color": color,
-            "expected_tests": list(EXPECTED_TESTS),
+            "color": decision.color,
+            "quality_status": decision.quality_status,
+            "expected_tests": list(expected),
+            "informative_tests": sorted(informative),
             "missing_tests": missing_tests,
+            "registry": registry,
+            "reasons": reasons,
             "test_results": test_results,
-            "color_counts": count_colors(inputs),
             "assessor_accuracy": accuracy,
             "assessment_result": assessment,
-            "coverage_gate_applied": coverage_gate,
-            "assessor_accuracy_gate_applied": accuracy_gate,
-            "assessment_gate_applied": assessment_gate,
-            "key_metric_gate_applied": key_metric_gate,
-            "gate_reasons": gate_reasons,
             "report_html": _report_html(
-                color, inputs, gate_reasons, missing_tests
+                decision.color, decision.quality_status, registry, reasons
             ),
         }
     }
