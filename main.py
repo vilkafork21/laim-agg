@@ -178,15 +178,19 @@ def _report_html(
 
 
 def main(
-    assessor_accuracy: float,
+    assessor_accuracy: float | None,
     assessment_result: dict,
     red_assessor_accuracy: float = 0.6,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Валидирует результаты тестов и формирует monitoring-result/v2."""
-    accuracy = _validate_accuracy(assessor_accuracy)
-    threshold = _validate_accuracy(red_assessor_accuracy)
     assessment = _validate_assessment_result(assessment_result)
+    accuracy = (
+        None
+        if assessor_accuracy is None and assessment["status"] == "not_computable"
+        else _validate_accuracy(assessor_accuracy)
+    )
+    threshold = _validate_accuracy(red_assessor_accuracy)
     raw_inputs = [
         value for key, value in sorted(kwargs.items()) if key.startswith("in")
     ]
@@ -197,7 +201,9 @@ def main(
     color = aggregate(inputs, critical_red=1, critical_amber=1)
     gate_reasons: list[str] = []
     coverage_gate = bool(missing_tests and color == "green")
-    accuracy_gate = bool(accuracy <= threshold and color == "green")
+    accuracy_gate = bool(
+        accuracy is not None and accuracy <= threshold and color == "green"
+    )
     assessment_gate = bool(
         assessment["status"] != "computed" and color == "green"
     )

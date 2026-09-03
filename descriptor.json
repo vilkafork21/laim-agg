@@ -20,7 +20,7 @@
       "type": "default",
       "shape": "shape_model",
       "required": true,
-      "description": "acc_auto из laim-asessor-agent, число от 0 до 1",
+      "description": "acc_auto из laim-asessor-agent: число 0..1 или null при status=not_computable",
       "order": 1
     },
     {

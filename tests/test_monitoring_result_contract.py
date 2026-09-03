@@ -177,11 +177,20 @@ def test_not_computable_must_be_gray():
 
 def test_unavailable_assessor_cannot_produce_green():
     result = _aggregate(
-        _results(), assessment_result=_assessment_result("not_computable")
+        _results(),
+        assessor_accuracy=None,
+        assessment_result=_assessment_result("not_computable"),
     )["all_results"]
 
     assert result["color"] == "gray"
+    assert result["assessor_accuracy"] is None
+    assert result["assessor_accuracy_gate_applied"] is False
     assert result["assessment_gate_applied"] is True
+
+
+def test_computed_assessment_requires_numeric_accuracy():
+    with pytest.raises(ValueError, match="assessor_accuracy.*числом"):
+        _aggregate(_results(), assessor_accuracy=None)
 
 
 def test_descriptor_deploys_transitive_import():
