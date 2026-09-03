@@ -130,7 +130,7 @@ KINDS = ("green", "amber", "red", "not_assessed", "missing")
 
 @pytest.mark.parametrize(
     "judge_kind, km_kind, extra_kind, info_kind",
-    itertools.product(("admitted", "red", "not_assessed"), KINDS, KINDS, KINDS),
+    list(itertools.product(("admitted", "red", "not_assessed"), KINDS, KINDS, KINDS)),
 )
 def test_truth_table_matches_table15(judge_kind, km_kind, extra_kind, info_kind):
     judge = _judge(judge_kind)
