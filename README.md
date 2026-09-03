@@ -40,7 +40,7 @@ laim-asessor-agent.assessment_result ──► assessment_result   ─┘    п�
 
 | Порт | Обязательный | Что приходит с платформы |
 |---|---|---|
-| `assessor_accuracy` | да | `acc_auto` из `laim-asessor-agent`: число `0..1` (`bool`, NaN и inf отвергаются) |
+| `assessor_accuracy` | да | `acc_auto` из `laim-asessor-agent`: число `0..1` (`bool`, NaN и inf отвергаются) или `null`, только если `assessment_result.status = not_computable` |
 | `assessment_result` | да | `laim-assessment-result.v1` из `laim-asessor-agent`: `contract_version`, `status`, `total_units`, `scored_units`; при `not_computable` — `reason` |
 | `in` (динамический) | нет | `all_results` тестов `km_test`, `local_drift`, `global_drift`, `oos_oot` — по одному соединению на тест |
 
@@ -67,8 +67,8 @@ laim-asessor-agent.assessment_result ──► assessment_result   ─┘    п�
 ## Как проходит прогон
 
 ```text
-1. Валидация скаляров   assessor_accuracy и red_assessor_accuracy → число 0..1
-2. Валидация оценивания assessment_result → contract_version, status, счётчики
+1. Валидация оценивания assessment_result → contract_version, status, счётчики
+2. Валидация скаляров   assessor_accuracy и red_assessor_accuracy → число 0..1; для невычислимого оценивания accuracy может быть null
 3. Индексация тестов    kwargs in* → поля, статусы, цвета, дубли, поля km_test
 4. Агрегация            aggregator.aggregate: red → amber → green / gray
 5. Гейты                coverage, accuracy, assessment, key_metric → gate_reasons
@@ -126,7 +126,7 @@ INFO main: laim-agg: tests=3 missing=['global_drift'] color=gray gates=['Неп�
 | `missing_tests` | не подключённые тесты в том же порядке |
 | `test_results` | словарь `test_name → all_results` теста в порядке `expected_tests` |
 | `color_counts` | счётчики `red`, `amber`, `green`, `gray`, `unknown` по входам |
-| `assessor_accuracy` | принятая точность, `float` |
+| `assessor_accuracy` | принятая точность, `float`; `null`, если оценивание не вычислено |
 | `assessment_result` | входной `laim-assessment-result.v1` как есть |
 | `coverage_gate_applied`, `assessor_accuracy_gate_applied`, `assessment_gate_applied`, `key_metric_gate_applied` | `bool` по каждому гейту |
 | `gate_reasons` | список причин понижения; пуст, если гейты не сработали |
@@ -144,7 +144,7 @@ INFO main: laim-agg: tests=3 missing=['global_drift'] color=gray gates=['Неп�
 
 | Причина | Текст ошибки |
 |---|---|
-| `assessor_accuracy` или `red_assessor_accuracy` не число, `bool`, NaN, вне `0..1` | `assessor_accuracy должен быть числом в диапазоне 0..1` |
+| `assessor_accuracy` или `red_assessor_accuracy` не число, `bool`, NaN, вне `0..1`; `assessor_accuracy = null` при вычисленном оценивании | `assessor_accuracy должен быть числом в диапазоне 0..1` |
 | `assessment_result` не объект, чужой `contract_version`, `status` вне `computed`/`not_computable`, `not_computable` без `reason` | `assessment_result …` с указанием поля |
 | `computed` с нарушением `1 <= scored_units <= total_units` (или не `int`) | `assessment_result computed требует 1 <= scored_units <= total_units` |
 | вход `in*` не объект или без обязательных полей | `laim-agg.in<N> не содержит поля [...]` |
@@ -159,7 +159,7 @@ INFO main: laim-agg: tests=3 missing=['global_drift'] color=gray gates=['Неп�
 |---|---|
 | Подключены не все четыре теста | `missing_tests` заполнен; `green` → `gray`, причина «Неполный реестр обязательных тестов» |
 | `assessor_accuracy <= red_assessor_accuracy` | `green` → `gray`, причина «Точность автоассессора X не выше порога Y» |
-| `assessment_result.status = not_computable` | `green` → `gray`, причина «Оценивание monitoring-выборки не выполнено» |
+| `assessment_result.status = not_computable` | `assessor_accuracy` может быть `null`; `green` → `gray`, причина «Оценивание monitoring-выборки не выполнено» |
 | `km_test` не подключён или `status != computed` | `green` → `gray`, причина «Ключевая метрика monitoring-выборки не вычислена» |
 | Ни одного цветного входа (пусто или все `gray`) | итог `gray` без гейтов, INFO «Ни одного цветного светофора на входе» |
 | `yellow` / `grey` во входе | приводятся к `amber` / `gray`, в `test_results` уходит нормализованный цвет |
