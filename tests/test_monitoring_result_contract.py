@@ -109,31 +109,97 @@ def _aggregate(tests, **kwargs):
     )
 
 
-def test_full_registry_is_preserved_in_one_output():
+def test_schema_v3_and_registry_fields():
     tests = _results()
     result = _aggregate(tests)["all_results"]
 
-    assert result["schema_version"] == "monitoring-result/v2"
-    assert result["expected_tests"] == list(agg.EXPECTED_TESTS)
+    assert result["schema_version"] == "monitoring-result/v3"
+    assert result["color"] == "green"
+    assert result["quality_status"] == "assessed"
+    assert result["reasons"] == []
+    assert result["expected_tests"] == ["km_test", "local_drift", "global_drift", "oos_oot"]
+    assert result["informative_tests"] == ["global_drift", "local_drift", "oos_oot"]
     assert result["missing_tests"] == []
     assert result["test_results"] == tests
-    assert result["color"] == "green"
     assert result["assessor_accuracy"] == 0.9
+    assert list(result["registry"]) == ["assessor", "km_test", "local_drift", "global_drift", "oos_oot"]
+    assert result["registry"]["assessor"] == {
+        "expected": True, "received": True, "informative": False,
+        "status": "computed", "light": "green", "reason": None,
+    }
+    assert result["registry"]["oos_oot"]["informative"] is True
+    for key in ("gate_reasons", "color_counts", "coverage_gate_applied"):
+        assert key not in result
 
 
-def test_missing_test_cannot_produce_green():
+def test_informative_red_does_not_change_light():
+    results = _results()
+    results["oos_oot"] = {**results["oos_oot"], **_common("oos_oot", "red")}
+    result = _aggregate(results)["all_results"]
+    assert result["color"] == "green"
+    assert result["registry"]["oos_oot"]["light"] == "red"
+
+
+def test_missing_expected_test_is_amber():
     tests = _results()
     missing = tests.pop("global_drift")
     result = _aggregate(tests)["all_results"]
 
-    assert result["color"] == "gray"
-    assert result["coverage_gate_applied"] is True
+    assert result["color"] == "amber" and result["quality_status"] == "assessed"
     assert result["missing_tests"] == ["global_drift"]
+    assert result["reasons"] == ["global_drift: ожидаемый результат отсутствует"]
+    assert result["registry"]["global_drift"]["received"] is False
 
-    # тот же набор с вернувшимся global_drift снова даёт полный реестр
     restored = _aggregate({**tests, "global_drift": missing})["all_results"]
-    assert restored["missing_tests"] == []
-    assert restored["color"] == "green"
+    assert restored["missing_tests"] == [] and restored["color"] == "green"
+
+
+def test_km_not_computable_is_amber_not_assessed():
+    results = _results()
+    results["km_test"] = {
+        **results["km_test"],
+        **_common("km_test", "gray", "not_computable"),
+        "reason": "нет базового значения",
+    }
+    result = _aggregate(results)["all_results"]
+    assert result["color"] == "amber" and result["quality_status"] == "not_assessed"
+    assert result["reasons"] == ["km_test: не оценено (нет базового значения)"]
+    assert "не выполнена" in result["calculated_traffic_lights"]["semaphore_title"]
+
+
+def test_km_red_with_admitted_judge_is_red():
+    results = _results()
+    results["km_test"] = {**results["km_test"], **_common("km_test", "red")}
+    result = _aggregate(results)["all_results"]
+    assert result["color"] == "red" and result["quality_status"] == "assessed"
+    assert result["calculated_traffic_lights"]["test_light"] == "red"
+
+
+def test_low_accuracy_blocks_red_and_green():
+    results = _results()
+    results["km_test"] = {**results["km_test"], **_common("km_test", "red")}
+    result = _aggregate(results, assessor_accuracy=0.3)["all_results"]
+    assert result["color"] == "amber" and result["quality_status"] == "not_assessed"
+    assert result["registry"]["assessor"]["light"] == "red"
+
+
+def test_unexpected_test_is_rejected():
+    with pytest.raises(ValueError, match="не ожидается"):
+        _aggregate(_results(), expected_tests="km_test,oos_oot", informative_tests="oos_oot")
+
+
+@pytest.mark.parametrize(
+    "expected, informative, message",
+    [
+        ("local_drift,oos_oot", "oos_oot", "km_test"),
+        ("km_test,oos_oot", "km_test", "km_test"),
+        ("km_test,oos_oot", "global_drift", "informative_tests"),
+        ("km_test,nope", "", "nope"),
+    ],
+)
+def test_settings_are_validated(expected, informative, message):
+    with pytest.raises(ValueError, match=message):
+        _aggregate(_results(), expected_tests=expected, informative_tests=informative)
 
 
 def test_duplicate_test_is_rejected():
@@ -175,17 +241,16 @@ def test_not_computable_must_be_gray():
         _aggregate({"km_test": km})
 
 
-def test_unavailable_assessor_cannot_produce_green():
+def test_unavailable_assessor_is_amber_not_assessed():
     result = _aggregate(
         _results(),
         assessor_accuracy=None,
         assessment_result=_assessment_result("not_computable"),
     )["all_results"]
 
-    assert result["color"] == "gray"
+    assert result["color"] == "amber" and result["quality_status"] == "not_assessed"
     assert result["assessor_accuracy"] is None
-    assert result["assessor_accuracy_gate_applied"] is False
-    assert result["assessment_gate_applied"] is True
+    assert result["registry"]["assessor"]["status"] == "not_assessed"
 
 
 def test_computed_assessment_requires_numeric_accuracy():
@@ -193,6 +258,14 @@ def test_computed_assessment_requires_numeric_accuracy():
         _aggregate(_results(), assessor_accuracy=None)
 
 
-def test_descriptor_deploys_transitive_import():
+def test_descriptor_deploys_table15_and_settings():
     descriptor = json.loads((MODULE_DIR / "descriptor.json").read_text())
-    assert "aggregator.py" in descriptor["script"]["runConfiguration"]["sourceFiles"]
+    source_files = descriptor["script"]["runConfiguration"]["sourceFiles"]
+    assert "table15.py" in source_files and "aggregator.py" not in source_files
+    settings = descriptor["ui"]["settings"][0]["components"][0]["config"]["components"]
+    by_name = {item["parameter"]: item for item in settings}
+    assert by_name["expected_tests"]["defaultValue"] == "km_test,local_drift,global_drift,oos_oot"
+    assert by_name["informative_tests"]["defaultValue"] == "local_drift,global_drift,oos_oot"
+    assert by_name["red_assessor_accuracy"]["defaultValue"] == 0.6
+    port = next(p for p in descriptor["ports"] if p["name"] == "all_results")
+    assert "monitoring-result/v3" in port["description"]
