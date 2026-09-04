@@ -38,10 +38,12 @@ laim-global-drift-test.all_results  ─┤
 laim-oos-oot-test.all_results       ─┼─► in (динамический)  ─┐
 laim-km-dynamic-test.all_results    ─┘                        ├─ laim-agg ──► all_results
 laim-asessor-agent.acc_auto          ──► assessor_accuracy    │   (семафор и HTML в UI ноды;
-laim-asessor-agent.assessment_result ──► assessment_result   ─┘    потребителей в port_wiring нет)
+laim-asessor-agent.assessment_result ──► assessment_result    │    потребителей в port_wiring нет)
+laim-traces-dataset-converter.processing_report ──► processing_report │
+laim-extract-sample.sample_meta      ──► sample_meta         ─┘
 ```
 
-Схема — `laim-sberds-wiring.v7` (`monitoring/shared/port_wiring.json` в `laim`);
+Схема — `laim-sberds-wiring.v8` (`monitoring/shared/port_wiring.json` в `laim`);
 выход `all_results` читают только семафор и виджет результата самой ноды.
 
 ## Порты и настройки
@@ -52,6 +54,8 @@ laim-asessor-agent.assessment_result ──► assessment_result   ─┘    п�
 |---|---|---|
 | `assessor_accuracy` | да | `acc_auto` из `laim-asessor-agent`: число `0..1` (`bool`, NaN и inf отвергаются) или `null`, только если `assessment_result.status = not_computable` |
 | `assessment_result` | да | `laim-assessment-result.v1` из `laim-asessor-agent`: `contract_version`, `status`, `total_units`, `scored_units`; при `not_computable` — `reason` |
+| `processing_report` | нет (ожидается) | `processing_report` из `laim-traces-dataset-converter`: блок `data_readiness` — базовый тест 6.3.2 (пригодность данных периода). Без него итог не выше жёлтого: «ожидаемый результат отсутствует» |
+| `sample_meta` | нет | `sample_meta` из `laim-extract-sample`: население и отобранные единицы, доля, seed — провенанс, на цвет не влияет |
 | `in` (динамический) | нет | `all_results` тестов из `expected_tests` — по одному соединению на тест |
 
 Динамические входы приходят в `main` как `**kwargs`: берутся все ключи с
@@ -83,7 +87,7 @@ laim-asessor-agent.assessment_result ──► assessment_result   ─┘    п�
 2. Валидация оценивания assessment_result → contract_version, status, счётчики
 3. Валидация скаляров   assessor_accuracy и red_assessor_accuracy → число 0..1; для невычислимого оценивания accuracy может быть null
 4. Индексация тестов    kwargs in* → поля, статусы, цвета, дубли, поля km_test; тест вне expected_tests отвергается
-5. Результаты методики  каждый тест → выполнен / не оценено / отсутствует; автоассессор → допущен / не допущен / не оценён
+5. Результаты методики  данные периода (6.3.2) по data_readiness → sufficient / limited / insufficient / failed; каждый тест → выполнен / не оценено / отсутствует; автоассессор → допущен / не допущен / не оценён
 6. Таблица 15           table15.decide: красный → жёлтый → зелёный без голосования
 7. Публикация           all_results + report_html
 ```
@@ -107,8 +111,11 @@ red_assessor_accuracy` → «не допущен» (красный), иначе 
 — прокси-оценки применимы с усиленным контролем: итог не выше жёлтого, красный
 `km_test` сохраняется.
 
-**6. Таблица 15.** Красный — `km_test` красный и автоассессор допущен.
-Иначе жёлтый, если есть хотя бы одно основание: автоассессор не допущен или
+**6. Таблица 15.** Красный — `km_test` красный, автоассессор допущен и данные
+периода пригодны (`data_readiness.state` `sufficient` или `limited`).
+Иначе жёлтый, если есть хотя бы одно основание: `processing_report` не
+подключён, данные не оценены (`insufficient`), непригодны (`failed`) или
+ограничены (`limited`); автоассессор не допущен или
 не оценён; `km_test` отсутствует, не оценён или жёлтый; любой ожидаемый тест
 отсутствует (и информативный тоже — реестр должен быть полон); светофорный
 дополнительный тест не оценён, жёлтый или красный (дополнительный тест не
@@ -145,7 +152,8 @@ INFO main: [laim-agg] итог=amber оценка=not_assessed получено=
 | `expected_tests` | реестр из настройки, в порядке настройки |
 | `informative_tests` | информативные тесты из настройки, отсортированы |
 | `missing_tests` | ожидаемые тесты без входа, в порядке `expected_tests` |
-| `registry` | словарь `assessor` и каждого ожидаемого теста → `expected`, `received`, `informative`, `status` (`computed` / `not_assessed` / `null`), `light` (`red` / `amber` / `green` / `null`), `reason` |
+| `registry` | словарь `data_readiness`, `assessor` и каждого ожидаемого теста → `expected`, `received`, `informative`, `status` (`computed` / `not_assessed` / `null`), `light` (`red` / `amber` / `green` / `null`), `reason` |
+| `provenance` | `sample` — `sample_meta` как есть (или `null`), `data_readiness` — блок конвертера как есть (или `null`) |
 | `reasons` | основания итога в порядке проверки; пуст только при зелёном итоге |
 | `test_results` | словарь `test_name → all_results` теста в порядке `expected_tests` |
 | `assessor_accuracy` | принятая точность, `float`; `null`, если оценивание не вычислено |
@@ -177,7 +185,9 @@ INFO main: [laim-agg] итог=amber оценка=not_assessed получено=
 
 | Событие | Реакция |
 |---|---|
-| `km_test` красный, автоассессор допущен | итог `red`, `quality_status = assessed` |
+| `km_test` красный, автоассессор допущен, данные пригодны | итог `red`, `quality_status = assessed` |
+| `processing_report` не подключён или без `data_readiness`; `data_readiness.state` `insufficient` / `failed` | итог `amber`, `quality_status = not_assessed`, результат `km_test` не учитывается |
+| `data_readiness.state = limited` | итог не выше `amber`, `quality_status = assessed` |
 | `km_test` жёлтый | итог `amber` |
 | `km_test` `not_computable` или не подключён | итог `amber`, `quality_status = not_assessed`, основание с `reason` теста |
 | `assessment_result.status = not_computable` или `assessor_accuracy <= red_assessor_accuracy` | автоассессор не допущен: итог не выше `amber`, `quality_status = not_assessed`, результат `km_test` не учитывается |

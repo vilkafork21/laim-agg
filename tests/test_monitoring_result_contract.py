@@ -100,10 +100,15 @@ def _assessment_result(status="computed"):
     return result
 
 
+def _report(state="sufficient", reason=None):
+    return {"status": "complete", "data_readiness": {"state": state, "reason": reason}}
+
+
 def _aggregate(tests, **kwargs):
     return agg.main(
         assessor_accuracy=kwargs.pop("assessor_accuracy", 0.9),
         assessment_result=kwargs.pop("assessment_result", _assessment_result()),
+        processing_report=kwargs.pop("processing_report", _report()),
         **{f"in{index}": value for index, value in enumerate(tests.values())},
         **kwargs,
     )
@@ -122,7 +127,11 @@ def test_schema_v3_and_registry_fields():
     assert result["missing_tests"] == []
     assert result["test_results"] == tests
     assert result["assessor_accuracy"] == 0.9
-    assert list(result["registry"]) == ["assessor", "km_test", "local_drift", "global_drift", "oos_oot"]
+    assert list(result["registry"]) == [
+        "data_readiness", "assessor", "km_test", "local_drift", "global_drift", "oos_oot",
+    ]
+    assert result["registry"]["data_readiness"]["light"] == "green"
+    assert result["provenance"] == {"sample": None, "data_readiness": {"state": "sufficient", "reason": None}}
     assert result["registry"]["assessor"] == {
         "expected": True, "received": True, "informative": False,
         "status": "computed", "light": "green", "reason": None,
@@ -269,3 +278,41 @@ def test_descriptor_deploys_table15_and_settings():
     assert by_name["red_assessor_accuracy"]["defaultValue"] == 0.6
     port = next(p for p in descriptor["ports"] if p["name"] == "all_results")
     assert "monitoring-result/v3" in port["description"]
+
+
+def test_missing_processing_report_is_amber_not_assessed():
+    result = _aggregate(_results(), processing_report=None)["all_results"]
+    assert result["color"] == "amber" and result["quality_status"] == "not_assessed"
+    assert result["reasons"][0] == "data_readiness: ожидаемый результат отсутствует"
+    assert result["registry"]["data_readiness"]["received"] is False
+
+
+def test_limited_data_is_amber_but_assessed():
+    result = _aggregate(
+        _results(), processing_report=_report("limited", "покрытие извлечения 0.80 ниже минимума 0.90"),
+    )["all_results"]
+    assert result["color"] == "amber" and result["quality_status"] == "assessed"
+    assert "ограничение данных" in result["reasons"][0]
+
+
+def test_failed_data_blocks_quality():
+    results = _results()
+    results["km_test"] = {**results["km_test"], **_common("km_test", "red")}
+    result = _aggregate(results, processing_report=_report("failed", "K2"))["all_results"]
+    assert result["color"] == "amber" and result["quality_status"] == "not_assessed"
+
+
+def test_sample_meta_is_passed_through_as_provenance():
+    meta = {"unit": "session", "population_units": 283, "sampled_units": 94, "fraction": 0.33}
+    result = _aggregate(_results(), sample_meta=meta)["all_results"]
+    assert result["provenance"]["sample"] == meta
+    with pytest.raises(ValueError, match="sample_meta"):
+        _aggregate(_results(), sample_meta="not a dict")
+
+
+def test_descriptor_declares_data_and_sample_ports():
+    descriptor = json.loads((MODULE_DIR / "descriptor.json").read_text())
+    ports = {port["name"]: port for port in descriptor["ports"]}
+    assert ports["processing_report"]["in"] is True and ports["processing_report"]["required"] is False
+    assert ports["sample_meta"]["in"] is True and ports["sample_meta"]["required"] is False
+    assert ports["in"]["dynamic"] is True

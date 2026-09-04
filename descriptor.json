@@ -2,7 +2,7 @@
   "id": "a065ae89-2a15-4eec-9bdf-700025244166",
   "name": "laim-agg",
   "description": "Агрегатор результатов тестов по блоку — выставляет итоговый светофор",
-  "fullDescription": "FOR MORE DETAILS VIEW README.md\n\nО ноде: Агрегатор валидирует all_results тестов (km-dynamic, local/global-drift, oos-oot), точность автоассессора и assessment_result, собирает их в monitoring-result/v3 и выставляет итог по таблице 15 методики этапа 4: красный только от km_test при допущенном автоассессоре, отсутствие или не оценено ожидаемого теста даёт жёлтый со статусом «не оценено», информативные тесты (покрытие, прогноз, различимость без эталона стабильного периода) в цвет не входят.",
+  "fullDescription": "FOR MORE DETAILS VIEW README.md\n\nО ноде: Агрегатор валидирует all_results тестов (km-dynamic, local/global-drift, oos-oot), точность автоассессора и assessment_result, читает готовность данных конвертера (6.3.2) и провенанс выборки, собирает всё в monitoring-result/v3 и выставляет итог по таблице 15 методики этапа 4: красный только от km_test при допущенном автоассессоре, отсутствие или не оценено ожидаемого теста даёт жёлтый со статусом «не оценено», информативные тесты (покрытие, прогноз, различимость без эталона стабильного периода) в цвет не входят.",
   "shortNameToDisplay": "Светофор",
   "moduleType": "test",
   "shape": "test",
@@ -34,6 +34,26 @@
       "order": 2
     },
     {
+      "name": "processing_report",
+      "label": "Отчёт конвертера",
+      "in": true,
+      "type": "default",
+      "shape": "shape_model",
+      "required": false,
+      "description": "processing_report из laim-traces-dataset-converter: блок data_readiness — базовый тест 6.3.2",
+      "order": 3
+    },
+    {
+      "name": "sample_meta",
+      "label": "Провенанс выборки",
+      "in": true,
+      "type": "default",
+      "shape": "shape_model",
+      "required": false,
+      "description": "sample_meta из laim-extract-sample: население и отобранные единицы, доля, seed",
+      "order": 4
+    },
+    {
       "name": "in",
       "label": "входные данные",
       "in": true,
@@ -42,7 +62,7 @@
       "required": false,
       "dynamic": true,
       "description": "Результаты тестов с семафором (km, drift, oos-oot)",
-      "order": 3
+      "order": 5
     },
     {
       "name": "all_results",
@@ -50,8 +70,8 @@
       "in": false,
       "type": "default",
       "shape": "shape_model",
-      "description": "monitoring-result/v3: итог по таблице 15 методики, статус оценки качества, реестр тестов и их результаты",
-      "order": 4
+      "description": "monitoring-result/v3: итог по таблице 15 методики, статус оценки качества, реестр тестов (включая пригодность данных 6.3.2) и провенанс выборки",
+      "order": 6
     }
   ],
   "portsMetadata": {
