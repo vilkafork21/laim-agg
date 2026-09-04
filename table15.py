@@ -14,6 +14,13 @@ from dataclasses import dataclass
 
 KM_TEST = "km_test"
 JUDGE = "assessor"
+DATA = "data_readiness"
+_DATA_STATES = {
+    "sufficient": ("computed", "green"),
+    "limited": ("computed", "amber"),
+    "insufficient": ("not_assessed", None),
+    "failed": ("computed", "red"),
+}
 _COLOR_ALIASES = {"yellow": "amber", "grey": "gray"}
 _KNOWN_COLORS = ("red", "amber", "green", "gray")
 
@@ -55,6 +62,24 @@ def outcome_from_result(name: str, result: dict | None, informative: bool) -> Ou
     return Outcome(name, True, informative, "computed", normalize_color(result["color"]))
 
 
+def data_outcome(report: dict | None) -> Outcome:
+    """Тест 6.3.2 по processing_report.data_readiness конвертера."""
+    if report is None:
+        return Outcome(DATA, False, False, reason="ожидаемый результат отсутствует")
+    readiness = report.get("data_readiness")
+    if not isinstance(readiness, dict):
+        return Outcome(
+            DATA, True, False, "not_assessed", None,
+            "processing_report без блока data_readiness",
+        )
+    state = readiness.get("state")
+    if state not in _DATA_STATES:
+        raise ValueError(f"processing_report.data_readiness.state={state!r} не поддерживается")
+    status, light = _DATA_STATES[state]
+    reason = readiness.get("reason") or readiness.get("reason_code") or "причина не указана"
+    return Outcome(DATA, True, False, status, light, None if state == "sufficient" else str(reason))
+
+
 def judge_outcome(assessment: dict, accuracy: float | None, threshold: float) -> Outcome:
     """Тест 6.3.3: статус допуска из calibration_metrics, иначе порог acc_auto."""
     if assessment["status"] != "computed":
@@ -80,10 +105,25 @@ def judge_outcome(assessment: dict, accuracy: float | None, threshold: float) ->
     return Outcome(JUDGE, True, False, "computed", "green")
 
 
-def decide(judge: Outcome, tests: dict[str, Outcome]) -> Decision:
+def decide(judge: Outcome, tests: dict[str, Outcome], data: Outcome | None = None) -> Decision:
     """Таблица 15: приоритет красный → жёлтый → зелёный без голосования."""
     km = tests[KM_TEST]
     reasons: list[str] = []
+    data_usable = True
+    if data is not None:
+        # Базовый тест 6.3.2: непригодные или не оценённые данные периода
+        # запрещают вывод о качестве; ограничение — жёлтый итог.
+        if not data.received:
+            reasons.append(f"{DATA}: ожидаемый результат отсутствует")
+            data_usable = False
+        elif data.status != "computed":
+            reasons.append(f"{DATA}: не оценено ({data.reason})")
+            data_usable = False
+        elif data.light == "red":
+            reasons.append(f"{DATA}: данные периода непригодны ({data.reason})")
+            data_usable = False
+        elif data.light == "amber":
+            reasons.append(f"{DATA}: ограничение данных ({data.reason})")
     judge_admitted = judge.status == "computed" and judge.light in ("green", "amber")
     if not judge_admitted:
         reasons.append(f"автоассессор не допущен: {judge.reason}")
@@ -99,7 +139,7 @@ def decide(judge: Outcome, tests: dict[str, Outcome]) -> Decision:
         reasons.append(
             f"{KM_TEST}: результат {km.light} не учитывается без допуска автоассессора"
         )
-    assessed = judge_admitted and km.received and km.status == "computed"
+    assessed = data_usable and judge_admitted and km.received and km.status == "computed"
     if assessed and km.light == "red":
         reasons.append(f"{KM_TEST}: красный результат при допущенном автоассессоре")
         return Decision("red", "assessed", tuple(reasons))

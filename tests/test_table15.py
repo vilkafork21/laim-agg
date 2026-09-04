@@ -164,31 +164,64 @@ def test_km_not_assessed_is_amber_and_quality_not_assessed():
 
 
 KINDS = ("green", "amber", "red", "not_assessed", "missing")
+DATA_KINDS = (None, "sufficient", "limited", "insufficient", "failed", "missing")
+
+
+def _data(kind):
+    if kind is None:
+        return None
+    if kind == "missing":
+        return t15.data_outcome(None)
+    return t15.data_outcome({"data_readiness": {"state": kind, "reason": "причина данных"}})
+
+
+def test_data_outcome_maps_readiness_states():
+    assert t15.data_outcome({"data_readiness": {"state": "sufficient"}}).light == "green"
+    limited = _data("limited")
+    assert limited.light == "amber" and limited.reason == "причина данных"
+    assert _data("insufficient").status == "not_assessed"
+    assert _data("failed").light == "red"
+    assert _data("missing").received is False
+    assert t15.data_outcome({}).status == "not_assessed"
+    with pytest.raises(ValueError, match="data_readiness.state"):
+        t15.data_outcome({"data_readiness": {"state": "weird"}})
+
+
+def test_failed_data_blocks_quality_even_with_red_km():
+    tests = {"km_test": _outcome("km_test", "red")}
+    decision = t15.decide(_judge("admitted"), tests, _data("failed"))
+    assert decision.color == "amber" and decision.quality_status == "not_assessed"
+    assert decision.reasons[0].startswith("data_readiness: данные периода непригодны")
+    limited = t15.decide(_judge("admitted"), {"km_test": _outcome("km_test", "green")}, _data("limited"))
+    assert limited.color == "amber" and limited.quality_status == "assessed"
 
 
 @pytest.mark.parametrize(
-    "judge_kind, km_kind, extra_kind, info_kind",
-    list(itertools.product(("admitted", "amber", "red", "not_assessed"), KINDS, KINDS, KINDS)),
+    "judge_kind, km_kind, extra_kind, info_kind, data_kind",
+    list(itertools.product(
+        ("admitted", "amber", "red", "not_assessed"), KINDS, KINDS, KINDS, DATA_KINDS,
+    )),
 )
-def test_truth_table_matches_table15(judge_kind, km_kind, extra_kind, info_kind):
+def test_truth_table_matches_table15(judge_kind, km_kind, extra_kind, info_kind, data_kind):
     judge = _judge(judge_kind)
     tests = {
         "km_test": _outcome("km_test", km_kind),
         "oos_oot": _outcome("oos_oot", extra_kind, informative=False),
         "local_drift": _outcome("local_drift", info_kind, informative=True),
     }
-    decision = t15.decide(judge, tests)
+    decision = t15.decide(judge, tests, _data(data_kind))
 
     admitted = judge_kind in ("admitted", "amber")
     km_computed = km_kind in ("green", "amber", "red")
-    assessed = admitted and km_computed
+    data_usable = data_kind in (None, "sufficient", "limited")
+    assessed = data_usable and admitted and km_computed
     assert (decision.quality_status == "assessed") == assessed
-    # Красный — только подтверждённый красный 6.3.4 при допущенном (хотя бы жёлтом) судье.
+    # Красный — только подтверждённый красный 6.3.4 при пригодных данных и допущенном судье.
     assert (decision.color == "red") == (assessed and km_kind == "red")
-    # Зелёный — только полный реестр, зелёный допуск и зелёные светофорные результаты.
+    # Зелёный — только полный реестр, достаточные данные, зелёный допуск и зелёные результаты.
     expected_green = (
         judge_kind == "admitted" and km_kind == "green" and extra_kind == "green"
-        and info_kind != "missing"
+        and info_kind != "missing" and data_kind in (None, "sufficient")
     )
     assert (decision.color == "green") == expected_green
     assert decision.color in ("red", "amber", "green")

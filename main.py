@@ -5,7 +5,16 @@ from math import isfinite
 from numbers import Real
 from typing import Any
 
-from table15 import JUDGE, KM_TEST, decide, judge_outcome, normalize_color, outcome_from_result
+from table15 import (
+    DATA,
+    JUDGE,
+    KM_TEST,
+    data_outcome,
+    decide,
+    judge_outcome,
+    normalize_color,
+    outcome_from_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +36,7 @@ _COLOR_HEX = {
     "gray": "#9e9e9e",
 }
 _TEST_LABEL = {
+    DATA: "Пригодность данных периода (6.3.2)",
     JUDGE: "Автоассессор: допуск и контроль (6.3.3)",
     "km_test": "Динамика ключевой метрики (6.3.4)",
     "local_drift": "Покрытие потока эталоном (6.3.7)",
@@ -210,10 +220,16 @@ def main(
     red_assessor_accuracy: float = 0.6,
     expected_tests: str = "km_test,local_drift,global_drift,oos_oot",
     informative_tests: str = "local_drift,global_drift,oos_oot",
+    processing_report: dict | None = None,
+    sample_meta: dict | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Валидирует результаты тестов и формирует monitoring-result/v3 по таблице 15."""
     expected, informative = _settings(expected_tests, informative_tests)
+    if processing_report is not None and not isinstance(processing_report, dict):
+        raise ValueError("processing_report должен быть объектом")
+    if sample_meta is not None and not isinstance(sample_meta, dict):
+        raise ValueError("sample_meta должен быть объектом")
     assessment = _validate_assessment_result(assessment_result)
     accuracy = (
         None
@@ -226,12 +242,13 @@ def main(
     ]
     test_results = _index_test_results(raw_inputs, expected)
 
+    data = data_outcome(processing_report)
     judge = judge_outcome(assessment, accuracy, threshold)
     outcomes = {
         name: outcome_from_result(name, test_results.get(name), name in informative)
         for name in expected
     }
-    decision = decide(judge, outcomes)
+    decision = decide(judge, outcomes, data)
     registry = {
         item.name: {
             "expected": True,
@@ -241,7 +258,7 @@ def main(
             "light": item.light,
             "reason": item.reason,
         }
-        for item in (judge, *outcomes.values())
+        for item in (data, judge, *outcomes.values())
     }
     missing_tests = [name for name in expected if name not in test_results]
     reasons = list(decision.reasons)
@@ -273,6 +290,10 @@ def main(
             "missing_tests": missing_tests,
             "registry": registry,
             "reasons": reasons,
+            "provenance": {
+                "sample": sample_meta,
+                "data_readiness": (processing_report or {}).get("data_readiness"),
+            },
             "test_results": test_results,
             "assessor_accuracy": accuracy,
             "assessment_result": assessment,
