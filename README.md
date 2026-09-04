@@ -100,8 +100,12 @@ laim-asessor-agent.assessment_result ──► assessment_result   ─┘    п�
 **5. Результаты методики.** `status = not_computable` → «не оценено» с
 `reason` (или `reason_code`) теста; тест без входа → «отсутствует»;
 `computed` → цвет теста. Автоассессор: `assessment_result.status !=
-computed` → «не оценён»; `assessor_accuracy <= red_assessor_accuracy` → «не
-допущен» (красный); иначе допущен.
+computed` → «не оценён»; если ассессор публикует
+`calibration_metrics.admission_status` (тест 6.3.3: `green` / `amber` / `red` /
+`not_assessed`), допуск берётся из него; иначе `assessor_accuracy <=
+red_assessor_accuracy` → «не допущен» (красный), иначе допущен. Жёлтый допуск
+— прокси-оценки применимы с усиленным контролем: итог не выше жёлтого, красный
+`km_test` сохраняется.
 
 **6. Таблица 15.** Красный — `km_test` красный и автоассессор допущен.
 Иначе жёлтый, если есть хотя бы одно основание: автоассессор не допущен или
@@ -177,6 +181,8 @@ INFO main: [laim-agg] итог=amber оценка=not_assessed получено=
 | `km_test` жёлтый | итог `amber` |
 | `km_test` `not_computable` или не подключён | итог `amber`, `quality_status = not_assessed`, основание с `reason` теста |
 | `assessment_result.status = not_computable` или `assessor_accuracy <= red_assessor_accuracy` | автоассессор не допущен: итог не выше `amber`, `quality_status = not_assessed`, результат `km_test` не учитывается |
+| `calibration_metrics.admission_status = red` / `not_assessed` | то же: допуск ассессора имеет приоритет над порогом точности |
+| `calibration_metrics.admission_status = amber` | итог не выше `amber`, `quality_status = assessed`, красный `km_test` сохраняется |
 | Ожидаемый тест не подключён (в том числе информативный) | итог `amber`, тест в `missing_tests`, `registry.<тест>.received = false` |
 | Информативный тест любого цвета или `not_computable` | итог не меняется; результат виден в `registry` и HTML |
 | Дополнительный светофорный тест (ожидаемый, но не информативный) жёлтый, красный или `not_computable` | итог `amber` |
