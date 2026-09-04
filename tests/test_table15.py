@@ -42,13 +42,51 @@ def _outcome(name, kind, informative=False):
 
 
 def _judge(kind):
-    """kind: admitted | red | not_assessed."""
+    """kind: admitted | amber | red | not_assessed."""
     if kind == "not_assessed":
         return t15.judge_outcome(
             {"status": "not_computable", "reason": "оценивание не выполнено"}, None, 0.6
         )
+    if kind == "amber":
+        return t15.judge_outcome(
+            {"status": "computed", "calibration_metrics": {
+                "admission_status": "amber", "admission_reason": "каппа ниже порога"}},
+            0.9, 0.6,
+        )
     accuracy = 0.9 if kind == "admitted" else 0.5
     return t15.judge_outcome({"status": "computed"}, accuracy, 0.6)
+
+
+def test_admission_status_overrides_accuracy_threshold():
+    admitted = t15.judge_outcome(
+        {"status": "computed", "calibration_metrics": {"admission_status": "green"}}, 0.3, 0.6
+    )
+    assert admitted.light == "green" and admitted.reason is None
+    refused = t15.judge_outcome(
+        {"status": "computed", "calibration_metrics": {
+            "admission_status": "red", "admission_reason": "судья не лучше моды"}},
+        0.95, 0.6,
+    )
+    assert refused.light == "red" and refused.reason == "судья не лучше моды"
+    pending = t15.judge_outcome(
+        {"status": "computed", "calibration_metrics": {
+            "admission_status": "not_assessed", "admission_reason": "holdout мал"}},
+        0.95, 0.6,
+    )
+    assert pending.status == "not_assessed" and pending.reason == "holdout мал"
+    with pytest.raises(ValueError, match="admission_status"):
+        t15.judge_outcome(
+            {"status": "computed", "calibration_metrics": {"admission_status": "blue"}}, 0.9, 0.6
+        )
+
+
+def test_amber_admission_caps_green_but_keeps_red():
+    tests = {"km_test": _outcome("km_test", "green")}
+    capped = t15.decide(_judge("amber"), tests)
+    assert capped.color == "amber" and capped.quality_status == "assessed"
+    assert capped.reasons == ("автоассессор допущен с ограничением: каппа ниже порога",)
+    tests = {"km_test": _outcome("km_test", "red")}
+    assert t15.decide(_judge("amber"), tests).color == "red"
 
 
 def test_outcome_from_missing_result():
@@ -130,7 +168,7 @@ KINDS = ("green", "amber", "red", "not_assessed", "missing")
 
 @pytest.mark.parametrize(
     "judge_kind, km_kind, extra_kind, info_kind",
-    list(itertools.product(("admitted", "red", "not_assessed"), KINDS, KINDS, KINDS)),
+    list(itertools.product(("admitted", "amber", "red", "not_assessed"), KINDS, KINDS, KINDS)),
 )
 def test_truth_table_matches_table15(judge_kind, km_kind, extra_kind, info_kind):
     judge = _judge(judge_kind)
@@ -141,15 +179,16 @@ def test_truth_table_matches_table15(judge_kind, km_kind, extra_kind, info_kind)
     }
     decision = t15.decide(judge, tests)
 
-    admitted = judge_kind == "admitted"
+    admitted = judge_kind in ("admitted", "amber")
     km_computed = km_kind in ("green", "amber", "red")
     assessed = admitted and km_computed
     assert (decision.quality_status == "assessed") == assessed
-    # Красный — только подтверждённый красный 6.3.4.
+    # Красный — только подтверждённый красный 6.3.4 при допущенном (хотя бы жёлтом) судье.
     assert (decision.color == "red") == (assessed and km_kind == "red")
-    # Зелёный — только полный реестр и зелёные светофорные результаты.
+    # Зелёный — только полный реестр, зелёный допуск и зелёные светофорные результаты.
     expected_green = (
-        assessed and km_kind == "green" and extra_kind == "green" and info_kind != "missing"
+        judge_kind == "admitted" and km_kind == "green" and extra_kind == "green"
+        and info_kind != "missing"
     )
     assert (decision.color == "green") == expected_green
     assert decision.color in ("red", "amber", "green")

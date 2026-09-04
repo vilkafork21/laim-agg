@@ -56,9 +56,24 @@ def outcome_from_result(name: str, result: dict | None, informative: bool) -> Ou
 
 
 def judge_outcome(assessment: dict, accuracy: float | None, threshold: float) -> Outcome:
-    """Тест 6.3.3 по assessment_result и acc_auto: допущен, не допущен, не оценён."""
+    """Тест 6.3.3: статус допуска из calibration_metrics, иначе порог acc_auto."""
     if assessment["status"] != "computed":
         return Outcome(JUDGE, True, False, "not_assessed", None, str(assessment.get("reason")))
+    calibration = assessment.get("calibration_metrics") or {}
+    admission = calibration.get("admission_status")
+    if admission is not None:
+        reason = str(calibration.get("admission_reason") or "основание не указано")
+        if admission == "not_assessed":
+            return Outcome(JUDGE, True, False, "not_assessed", None, reason)
+        if admission not in ("green", "amber", "red"):
+            raise ValueError(
+                f"assessment_result.calibration_metrics.admission_status={admission!r} "
+                "не поддерживается"
+            )
+        return Outcome(
+            JUDGE, True, False, "computed", admission,
+            None if admission == "green" else reason,
+        )
     if accuracy is not None and accuracy <= threshold:
         reason = f"точность автоассессора {accuracy:.3f} не выше порога {threshold:.3f}"
         return Outcome(JUDGE, True, False, "computed", "red", reason)
@@ -69,9 +84,13 @@ def decide(judge: Outcome, tests: dict[str, Outcome]) -> Decision:
     """Таблица 15: приоритет красный → жёлтый → зелёный без голосования."""
     km = tests[KM_TEST]
     reasons: list[str] = []
-    judge_admitted = judge.status == "computed" and judge.light == "green"
+    judge_admitted = judge.status == "computed" and judge.light in ("green", "amber")
     if not judge_admitted:
         reasons.append(f"автоассессор не допущен: {judge.reason}")
+    elif judge.light == "amber":
+        # Жёлтый допуск (6.3.3): прокси-оценки применимы с усиленным контролем,
+        # итог итерации не выше жёлтого, красный 6.3.4 сохраняется.
+        reasons.append(f"автоассессор допущен с ограничением: {judge.reason}")
     if not km.received:
         reasons.append(f"{KM_TEST}: ожидаемый результат отсутствует")
     elif km.status != "computed":
